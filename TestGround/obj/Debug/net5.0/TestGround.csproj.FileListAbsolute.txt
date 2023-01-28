@@ -1,0 +1,16 @@
+C:\Users\jamundarain\Desktop\JSTORAGE\CodinGame\Bot\TestGround\bin\Debug\net5.0\TestGround.exe
+C:\Users\jamundarain\Desktop\JSTORAGE\CodinGame\Bot\TestGround\bin\Debug\net5.0\TestGround.deps.json
+C:\Users\jamundarain\Desktop\JSTORAGE\CodinGame\Bot\TestGround\bin\Debug\net5.0\TestGround.runtimeconfig.json
+C:\Users\jamundarain\Desktop\JSTORAGE\CodinGame\Bot\TestGround\bin\Debug\net5.0\TestGround.runtimeconfig.dev.json
+C:\Users\jamundarain\Desktop\JSTORAGE\CodinGame\Bot\TestGround\bin\Debug\net5.0\TestGround.dll
+C:\Users\jamundarain\Desktop\JSTORAGE\CodinGame\Bot\TestGround\bin\Debug\net5.0\ref\TestGround.dll
+C:\Users\jamundarain\Desktop\JSTORAGE\CodinGame\Bot\TestGround\bin\Debug\net5.0\TestGround.pdb
+C:\Users\jamundarain\Desktop\JSTORAGE\CodinGame\Bot\TestGround\obj\Debug\net5.0\TestGround.csprojAssemblyReference.cache
+C:\Users\jamundarain\Desktop\JSTORAGE\CodinGame\Bot\TestGround\obj\Debug\net5.0\TestGround.GeneratedMSBuildEditorConfig.editorconfig
+C:\Users\jamundarain\Desktop\JSTORAGE\CodinGame\Bot\TestGround\obj\Debug\net5.0\TestGround.AssemblyInfoInputs.cache
+C:\Users\jamundarain\Desktop\JSTORAGE\CodinGame\Bot\TestGround\obj\Debug\net5.0\TestGround.AssemblyInfo.cs
+C:\Users\jamundarain\Desktop\JSTORAGE\CodinGame\Bot\TestGround\obj\Debug\net5.0\TestGround.csproj.CoreCompileInputs.cache
+C:\Users\jamundarain\Desktop\JSTORAGE\CodinGame\Bot\TestGround\obj\Debug\net5.0\TestGround.dll
+C:\Users\jamundarain\Desktop\JSTORAGE\CodinGame\Bot\TestGround\obj\Debug\net5.0\ref\TestGround.dll
+C:\Users\jamundarain\Desktop\JSTORAGE\CodinGame\Bot\TestGround\obj\Debug\net5.0\TestGround.pdb
+C:\Users\jamundarain\Desktop\JSTORAGE\CodinGame\Bot\TestGround\obj\Debug\net5.0\TestGround.genruntimeconfig.cache
