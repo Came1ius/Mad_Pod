@@ -5,10 +5,55 @@ using System.Text;
 using System.Collections;
 using System.Collections.Generic;
 
+
+/*
+ * TODO:
+ * - Print your prediction of the next move based on move command
+ * -- useful to have one that translates based on command entered by opponent
+ * --- i cannot see it live but i can reverse engineer commands
+ * -- probably deciding my move like i was doing, based on angle and thrust rather than position ok
+ * --- i then translate the angle into coordinates that now can be arbitrary, helps hide my intentions
+ * -- See if you can calculate best solution rather than check all possibilities
+ * --- could be faster and more accurate
+ * --- having all possibilities check is useful to estimate likely future position/vector of enemy so this is needed anyways
+ * ---- my current prediction of enemy was not adding any angle and keeping thrust the same, maybe adjust this
+ *
+ * - Predict collisions correctly
+ * -- is going to be weird when there are multiple collisions, wonder how they are ordered
+ * --- if two pods collide first but their bounce hits another, do you just add up all vectors of overlapping future pods?
+ * -- start by crashing your two pods and predicting outcome since you know your commands
+ *
+ * - it will be useful to make pod commands as a team rather than individually like before so you can coordinate
+ * -- try to make units of calculation that can be optimized through machine learning or neural nets easily
+ * --- i wonder how i can create a neural net that has extra info like the physics involved hybrid between regression and NN
+ * --- something like given podInfo on both pod and target dest as parameters to NN and info about physics, output best commands
+ * -- logic something like:
+ * --- given both podInfos
+ * ---- If team timeout > 50
+ * ----- collaborate to make pod ranked higher move closer to its next target
+ * ------ collide enemy near friend ranked higher so that resulting vectors favor your higher ranked friend
+ * ----- maybe move any pod to reset timeout if unobstructed
+ * ---- If team timeout < 50
+ * ----- defend enemy to increase its timeout (might not be good idea because if you are ahead then you lose the lead)
+ *
+ * - Once you can predict collisions correctly move on to animation
+ * -- this will be learning experience of graphics
+ * -- leads to reinforcement learning learning => reward faster move to a position or whole map targets
+ * --- maybe adversarial learning => battle pods to each other improve attach and defense
+ * -- could make into tiktok battle channel with my own figures
+ * -- much easier to test outcomes and techniques 
+ *
+ * - Track if pod has used its 650 thrust, not sure if one per team or one each, test it
+ */
+
 /**
  * Auto-generated code below aims at helping you parse
  * the standard input according to the problem statement.
  **/
+
+/// <summary>
+/// Snapshot information of a pod received at each iteration of the game
+/// </summary>
 public class PodInfo
 {
     public int X { get; set; }
@@ -18,10 +63,9 @@ public class PodInfo
     public int Vy { get; set; }
     public int Angle { get; set; }
     public int NextCheckPointId { get; set; }
-    public int LapNumber { get; set; }
     public override string ToString()
     {
-        return $"x:{X}, y:{Y}, vx:{Vx}, vy:{Vy}, angle:{Angle}, Dest:{NextCheckPointId}";
+        return $"x:{X}, y:{Y}, vx:{Vx}, vy:{Vy}, angle:{Angle}, DestChkpnt:{NextCheckPointId}";
     }
 }
 
@@ -56,655 +100,104 @@ public class Command
 
 public class RunInfo
 {
-    public List<PodInfo> MyBots = new List<PodInfo> { };
-    public List<PodInfo> EnemyBots = new List<PodInfo> { };
+    public Dictionary<Pods, PodInfo> Pods = new Dictionary<Pods, PodInfo> { };
     public override string ToString()
     {
         var response = "";
-
-        for (var bot = 0; bot < MyBots.Count; bot++)
+        foreach (var bot in Pods)
         {
-            response += $"MyBot{bot}: {MyBots[bot]} \n";
-        }
-
-        for (var bot = 0; bot < EnemyBots.Count; bot++)
-        {
-            response += $"EBot{bot}: {EnemyBots[bot]} \n";
+            response += $"Bot:{bot.Key}: Details:{bot.Value} \n";
         }
         return response;
     }
 }
 
+public enum Pods
+{
+    MyPod1,
+    MyPod2,
+    EnemyPod1,
+    EnemyPod2
+}
+
+/// <summary>
+/// Permanent instance of a pod
+/// </summary>
 public class PodInstance
 {
-    GameInfo gameInfo;
-    public bool _engagedInDefense = false;
-    public int _consecutiveBlocksCount = 0;
-    RunInfo PrevRunInfo = null;
-    private RunInfo _runInfo = null;
-    public RunInfo runInfo
+    public int LapNumber { get; private set; }
+    public int TimeOut { get; private set; } = 100;
+    public int RankingInGame { get; set; }
+    public int DistanceToNextCheckpoint { get; private set; }
+    public int CheckPointsReached { get; private set; } = 1; //checkPointCount received is 1 based
+    public GameInfo GameInfo { get; set; }
+
+    private PodInfo _currentPodInfo = null;
+
+    public PodInfo CurrentPodInfo
     {
-        get => _runInfo;
+        get => _currentPodInfo;
         set
         {
-            PrevRunInfo = _runInfo;
-            _runInfo = value;
+            PreviousPodInfo = _currentPodInfo;
+            _currentPodInfo = value;
+
+            CalculateDistanceToNextCheckpoint();
+            TrackCheckPointTimeoutAndLap();
         }
     }
 
-    int podIndex = -1;
+    public PodInfo PreviousPodInfo { get; private set; }
 
-
-    public PodInstance(int podIndex, GameInfo game)
+    private void TrackCheckPointTimeoutAndLap()
     {
-        this.podIndex = podIndex;
-        gameInfo = game;
-    }
-
-    private int EnemyToDefend()
-    {
-        var enemy1Pod = runInfo.EnemyBots[0];
-        var enemy2Pod = runInfo.EnemyBots[1];
-        var enemy1DistToTarget = GetDistanceToLocation(enemy1Pod, gameInfo.Checkpoints[enemy1Pod.NextCheckPointId]);
-        var enemy2DistToTarget = GetDistanceToLocation(enemy2Pod, gameInfo.Checkpoints[enemy2Pod.NextCheckPointId]);
-
-        //return enemy1DistToTarget < enemy2DistToTarget ? 0 : 1;
-        if (enemy1Pod.LapNumber == enemy2Pod.LapNumber)
+        //If next check point changed, i must have hit the target
+        if (PreviousPodInfo != null && PreviousPodInfo.NextCheckPointId != CurrentPodInfo.NextCheckPointId)
         {
-            if (enemy1Pod.NextCheckPointId == enemy2Pod.NextCheckPointId)
-            {
-                return enemy1DistToTarget < enemy2DistToTarget ? 0 : 1;
-            }
+            CheckPointsReached++;
+            TimeOut = 99; //Reset timeout
 
-            //var nextIdValue1 = (enemy1Pod.NextCheckPointId + 1) % gameInfo.CheckpointCount;
-            //var nextIdValue2 = (enemy2Pod.NextCheckPointId + 1) % gameInfo.CheckpointCount;
-            //Console.Error.WriteLine($"next1 = {nextIdValue1}, next2 = {nextIdValue2} {enemy1Pod.NextCheckPointId }:{enemy2Pod.NextCheckPointId }");
-            var checkpoint1 = enemy1Pod.NextCheckPointId == 0 ? 100 : enemy1Pod.NextCheckPointId;
-            var checkpoint2 = enemy2Pod.NextCheckPointId;
-            //Console.Error.WriteLine($"next1 = {checkpoint1}, next2 = {checkpoint2} {enemy1Pod.NextCheckPointId }:{enemy2Pod.NextCheckPointId }");
-            if (checkpoint1 == 0) return 0;
-            if (checkpoint2 == 0) return 1;
-            return checkpoint1 > checkpoint2 ? 0 : 1;
-        }
+            //when zero a lap has been completed
+            if (CheckPointsReached % GameInfo.CheckpointCount != 0) return;
 
-        var toDefend = enemy1Pod.LapNumber > enemy2Pod.LapNumber ? 0 : 1;
-        //Console.Error.WriteLine($"e1Laps = {enemy1Pod.LapNumber}, e2Laps = {enemy2Pod.LapNumber},d: {toDefend}, ");
-        return toDefend;
-    }
-
-    public string GetDefenseCommand2(bool boostAvailable, string friendCmd)
-    {
-        var friendIndex = (podIndex + 1) % 2;
-        var thisPod = runInfo.MyBots[podIndex];
-        var friend = runInfo.MyBots[friendIndex];
-        var enemy1 = runInfo.EnemyBots[0];
-        var enemy2 = runInfo.EnemyBots[1];
-        var enemyPos1 = CalculateFuturePosition(enemy1, 200, 0, true);
-        var enemyPos2 = CalculateFuturePosition(enemy2, 200, 0, true);
-        var enemyPos1R = CalculateFuturePosition(enemy1, 200, 0, true);
-        var enemyPos2R = CalculateFuturePosition(enemy2, 200, 0, true);
-        var myPos = CalculateFuturePosition(thisPod, 200, 0, true);
-        var distanceToE = (int)GetDeltaBetweenPods(myPos, enemyPos1R) + 1;
-        var distanceToE2 = (int)GetDeltaBetweenPods(myPos, enemyPos2R) + 1;
-        var distanceToFriend = (int)GetDeltaBetweenPods(myPos, friend) + 1;
-        var closestEnemy = distanceToE < distanceToE2 ? 0 : 1;
-
-        var enemy1Speed = (int)GetSpeedMagnitude(enemy1);
-        var enemy2Speed = (int)GetSpeedMagnitude(enemy2);
-        var mySpeed = (int)GetSpeedMagnitude(thisPod);
-        var speedToDefend = 400;
-        var distToDefend = 1000;
-        if (distanceToE <= distToDefend && (enemy1Speed > speedToDefend || mySpeed > speedToDefend))
-        {
-            _engagedInDefense = true;
-            // return $"{cmd.destination.x} {cmd.destination.x} SHIELD {distanceToE1} {distanceToE2}";
-            return $"{enemyPos1.X} {enemyPos1.Y} SHIELD  v:{enemy1Speed}, {mySpeed}";
-        }
-
-        if (distanceToE2 <= distToDefend && (enemy2Speed > speedToDefend || mySpeed > speedToDefend))
-        {
-            _engagedInDefense = true;
-            // return $"{cmd.destination.x} {cmd.destination.x} SHIELD {distanceToE1} {distanceToE2}";
-            return $"{enemyPos2.X} {enemyPos2.Y} SHIELD  v2:{enemy2Speed}, {mySpeed}";
-        }
-
-
-
-
-        var distClose = 2500;
-        var distCloseF = 900;
-        var enemyToDefendIndex = EnemyToDefend();
-        var enemyToDefend = enemyToDefendIndex == 0 ? enemyPos1 : enemyPos2;
-        var chpId = (enemyToDefend.NextCheckPointId); //% gameInfo.checkpointCount;
-        var checkPoint = gameInfo.Checkpoints[chpId];
-        var nextCheckPoint = gameInfo.Checkpoints[(chpId + 1) % gameInfo.CheckpointCount];
-        //var checkPoint = gameInfo.Checkpoints[(1)];
-
-        Coordinates checkPointToGuard = null;
-        var guardingNextNextCheckPoint = false;
-        if (GetDistanceToLocation(enemyToDefend, checkPoint) >= GetDistanceToLocation(thisPod, checkPoint))
-        {
-            checkPointToGuard = checkPoint;
+            //Console.Error.WriteLine($"Reached:{CheckPointsReached},Mod:{CheckPointsReached % GameInfo.CheckpointCount}");
+            Console.Error.WriteLine($"Reached:{CheckPointsReached},Mod:{CheckPointsReached % GameInfo.CheckpointCount}");
+            LapNumber++;
         }
         else
         {
-            checkPointToGuard = nextCheckPoint;
-            guardingNextNextCheckPoint = true;
+            TimeOut--; //Running out of time to get to checkpoint
         }
-
-        if (distanceToFriend < distCloseF)
-        {
-            var c = GetOptimizedCommand(enemyToDefend.PosCoordinates, false);
-            //c.Thrust = -1;
-            c.Thrust = 200;
-            return GetOptimizedCommand(enemyToDefend.PosCoordinates, false) + $" F";
-        }
-
-        //var enemyAttack = closestEnemy == 0 ? enemyPos1 : enemyPos2;
-        var enemyAttack = enemyToDefend;
-        //var distanceToEdefend = (int)GetDeltaBetweenPods(myPos, enemyAttack) + 1;
-
-        var distanceEnemyToTarget = GetDistanceBetweenCoords(enemyAttack.PosCoordinates,
-            gameInfo.Checkpoints[enemyAttack.NextCheckPointId]);
-        //if ( distanceToE < distClose )//|| distanceToE2 < distClose)
-        //if (distanceToEdefend < distClose )//|| distanceToE2 < distClose)
-        var enemySpeed = (int)GetSpeedMagnitude(enemyToDefend) + 1;
-        var enemyTimeToCoverDistance = distanceEnemyToTarget / enemySpeed;
-        Console.Error.WriteLine($"EnemySpeed: {enemySpeed}, distEToTarg: {distanceEnemyToTarget}, time:{enemyTimeToCoverDistance}");
-        if ((enemyTimeToCoverDistance <= 10 || enemySpeed < 100) && !guardingNextNextCheckPoint)
-        {
-            var ex = enemyAttack.X - (int)((enemyAttack.X - checkPointToGuard.X) * 0.2);
-            var ey = enemyAttack.Y - (int)((enemyAttack.Y - checkPointToGuard.Y) * 0.2);
-            var c = new Coordinates() { X = ex, Y = ey };
-            _engagedInDefense = true;
-
-            if (mySpeed < 500)
-            {
-                _consecutiveBlocksCount += 1;
-            }
-
-            //return GetOptimizedCommand(enemyAttack.PosCoordinates, boostAvailable) + $" enemy{enemyToDefendIndex} CEF, {enemyAttack.PosCoordinates}";
-            return GetOptimizedCommand(c, boostAvailable) + $" enemy{enemyToDefendIndex} CEF, {enemyAttack.PosCoordinates}";
-        }
-        _engagedInDefense = false;
-
-        //half way through path
-
-        //var newX = enemyToDefend.X - (int)((enemyToDefend.X - checkPoint.X) / 1.75);
-        //var newY = enemyToDefend.Y - (int)((enemyToDefend.Y - checkPoint.Y) / 1.75);
-        //var newX = enemyToDefend.X - (int)((enemyToDefend.X - nextCheckPoint.X) * 0.7);
-        //var newY = enemyToDefend.Y - (int)((enemyToDefend.Y - nextCheckPoint.Y) * 0.7);
-
-
-
-        var centerX = 7800;
-        var centerY = 4400;
-        var newX = centerX - (int)((centerX - checkPointToGuard.X) * 0.8);
-        var newY = centerY - (int)((centerY - checkPointToGuard.Y) * 0.8);
-
-        //I am guarding the checkpoint where enemy is coming, get in the way
-        if (!guardingNextNextCheckPoint)
-        {
-            newX = enemyAttack.X - (int)((enemyAttack.X - checkPointToGuard.X) * 0.8);
-            newY = enemyAttack.Y - (int)((enemyAttack.Y - checkPointToGuard.Y) * 0.8);
-        }
-
-        var coords = new Coordinates() { X = newX, Y = newY };
-        var fChk = runInfo.MyBots[friendIndex].NextCheckPointId == 0 ? gameInfo.CheckpointCount : runInfo.MyBots[friendIndex].NextCheckPointId;
-        //var coords = gameInfo.Checkpoints[0];
-        //var coords = checkPoint;
-
-
-        //Get to the center of the map based on centroids of checkpoints
-        /*
-        if (GetDistanceToLocation(enemyToDefend, coords) < GetDistanceToLocation(thisPod, coords))
-        {
-
-            if (chpId == 0 || (chpId + 1) % gameInfo.CheckpointCount == 0)
-            {
-                coords = gameInfo.Checkpoints[0];
-            }
-            else
-            {
-                var centroidX = 0;
-                var centroidY = 0;
-                foreach (var c in gameInfo.Checkpoints)
-                {
-                    centroidX += c.X;
-                    centroidY += c.Y;
-                }
-                centroidX = centroidX / gameInfo.CheckpointCount;
-                centroidY = centroidY / gameInfo.CheckpointCount;
-                coords.X = centroidX;
-                coords.Y = centroidY;
-            }
-        }
-        */
-
-        if (runInfo.MyBots[friendIndex].NextCheckPointId == 0)
-        {
-            //coords = new Coordinates() {X = coords.X, Y = coords.Y - 1000} ;
-        }
-
-
-        var distanceToTarget = GetDistanceToLocation(thisPod, coords);
-        var cmd = GetOptimizedCommand(coords, false);
-        var speed = Math.Sqrt(Math.Pow(thisPod.Vx, 2) + Math.Pow(thisPod.Vy, 2));
-
-        /*
-                if (distanceToTarget < 1000 && thisPod.Vx + thisPod.Vx < 10)
-                {
-                    cmd = GetOptimizedCommand(new Coordinates() { X = newX, Y = newY }, false);
-                    cmd.Thrust = 1;
-                }
-        */
-        if (WouldStoppingNowWouldStopAtTarget(thisPod, coords))
-        {
-            //TODO: need to calculate the command so that it stops at destination
-            cmd.Thrust = 0;
-            cmd.Destination = enemyToDefend.PosCoordinates;
-            Console.Error.WriteLine($"thr={cmd.Thrust},d{(int)distanceToTarget}, sp: {speed}");
-        }
-        else if (cmd.Thrust > 100 && cmd.Thrust != 650)
-        {
-            //cmd.Thrust = 100;
-        }
-
-        _consecutiveBlocksCount = 0;
-        return cmd.ToString() + $" enemy{enemyToDefendIndex} MH {coords},chp{chpId}, th{cmd.Thrust}, d:{(int)distanceToTarget}";
-
-        //return GetOptimizedCommand(coords, false) + $" enemy{enemyToDefendIndex} MH {coords},chp{chpId}";
-        //return GetOptimizedCommand(enemy,false).ToString() + $" enemy{enemyToDefendIndex} MH {coords},chp{chpId}";
     }
 
-    public double GetSpeedMagnitude(PodInfo pod)
+
+    private void CalculateDistanceToNextCheckpoint()
     {
-        return Math.Sqrt(Math.Pow(pod.Vx, 2) + Math.Pow(pod.Vy, 2));
+        //TODO: this could reveal an important problem, i get the coordinate of the previous move compared to what the system
+        //considers. For this reason i cannot check if pod over nextTarget because when it is over, the nextTarget changes
+        //this is bad if i want to know if I am over the target because it could miss it by just checking the distance to target
+        //it is like you have to estimate future position and then that is what the system considers
+        //this is important to figure out collisions i think
+
+        //Console.Error.WriteLine($"D:{CurrentPodInfo.PosCoordinates},Ch:{GameInfo.Checkpoints[CurrentPodInfo.NextCheckPointId]}");
+        DistanceToNextCheckpoint = (int)Utilities.GetPodDistanceToCoordinates(
+            CurrentPodInfo,
+            GameInfo.Checkpoints[CurrentPodInfo.NextCheckPointId]);
     }
 
-    public Command WouldPredictedMotionArriveAtTarget(int predictionNumbers, bool isBoostAvailable, PodInfo pod, Coordinates aimDestination, Coordinates actualDestination)
+    public override string ToString()
     {
-        var singleBoostForPrediction = isBoostAvailable;
-        var currentPod = pod;
-        var predictionList = new List<Command>();
-        var enemy1 = runInfo.EnemyBots[0];
-        var enemy2 = runInfo.EnemyBots[1];
-        for (var i = 0; i < predictionNumbers; i++)
-        {
-            //Console.Error.WriteLine($"--- calculating {i}th prediction");
-            var prediction = GetOptimizedCommand(currentPod, aimDestination, singleBoostForPrediction);
-            if (prediction.Thrust == 650) singleBoostForPrediction = false;
-            predictionList.Add(prediction);
-            var distanceToDestination = GetDistanceToLocation(prediction.FuturePodAfterCommand, actualDestination);
-            currentPod = prediction.FuturePodAfterCommand;
-
-            //evade
-            var distanceToE1 = (int)GetDeltaBetweenPods(currentPod, enemy1) + 1;
-            var distanceToE2 = (int)GetDeltaBetweenPods(currentPod, enemy2) + 1;
-            var evadeDistance = 400;
-            if ((distanceToE1 <= evadeDistance || distanceToE2 <= evadeDistance) && i > 0)
-            {
-                var mod = predictionList[0];
-                mod.Thrust = 200;
-                //mod.Destination = new Coordinates(){X = 7000, Y = 4000};
-                //return mod;
-            }
-
-            if (distanceToDestination <= 600)
-            {
-                return predictionList[0];
-            }
-        }
-        return null;
+        return $"Timeout:{TimeOut},Rank:{RankingInGame},Lap:{LapNumber},Dist:{DistanceToNextCheckpoint},Cur:{CurrentPodInfo.PosCoordinates},Ch:{GameInfo.Checkpoints[CurrentPodInfo.NextCheckPointId]}";
     }
+}
 
-    //TODO: this would try to make it so that commands plan to stop at target perfectly and get there as fast as possible
-    public bool WouldStoppingNowWouldStopAtTarget(PodInfo pod, Coordinates destination)
-    {
-        PodInfo futurePod = pod;
-        while (true)
-        {
-            futurePod = CalculateFuturePosition(futurePod, 0, 0, false);
-            var distance = GetDistanceToLocation(futurePod, destination);
-            if (distance < 1500)
-            {
-                return true;
-            }
-            if (GetSpeed(futurePod) <= 0)
-            {
-                return false;
-            }
-        }
-    }
-
-    public double GetSpeed(PodInfo pod)
-    {
-        return Math.Sqrt(Math.Pow(pod.Vx, 2) + Math.Pow(pod.Vy, 2));
-    }
-
-    public bool IsCollisionPath(PodInfo podA, PodInfo podB)
-    {
-        //no collision sum of vectors
-        var vA = Math.Sqrt(Math.Pow(podA.Vx, 2) + Math.Pow(podA.Vy, 2));
-        var vB = Math.Sqrt(Math.Pow(podB.Vx, 2) + Math.Pow(podB.Vy, 2));
-        var v = vA + vB;
-
-        //collission
-        var vx = podA.Vx + podB.Vx;
-        var vy = podA.Vy + podB.Vy;
-        var mag = Math.Sqrt(Math.Pow(vx, 2) + Math.Pow(vy, 2));
-        var ratio = Math.Abs(mag - v) / mag;
-        Console.Error.WriteLine($"mag:{(int)mag}, v:{(int)v}, ratio: {ratio}");
-        return (ratio > 0.4);
-        //return true;
-    }
-
-    public bool IsCollisionPath2(PodInfo podA, PodInfo podB)
-    {
-        //no collision sum of vectors
-        var x = podA.Vx + podB.Vx;
-        var y = podA.Vy + podB.Vy;
-        var absX = Math.Abs(podA.Vx) + Math.Abs(podB.Vx);
-        var absY = Math.Abs(podA.Vy) + Math.Abs(podB.Vy);
-
-        return (x < absX || y < absY);
-        //return true;
-    }
-
-    public string GetCommand(bool isBoostAvailable)
-    {
-        isBoostAvailable = false; //boost only available for defense
-        var thisPod = runInfo.MyBots[podIndex];
-        var checkPoint = thisPod.NextCheckPointId;
-        var nextCheckpointPosition = gameInfo.Checkpoints[checkPoint];
-
-        //Get following checkpoint
-        var followingCheckPointIndex = (checkPoint + 1) % gameInfo.CheckpointCount;
-        var checkpointAhead = gameInfo.Checkpoints[followingCheckPointIndex];
-
-        //prediction going to actual destination
-        var cmdNext = WouldPredictedMotionArriveAtTarget(20, isBoostAvailable, thisPod, nextCheckpointPosition, nextCheckpointPosition);
-        //var cmdNext = GetOptimizedCommand(nextCheckpointPosition,isBoostAvailable);
-
-        if (cmdNext == null)
-        {
-            //var turnAngle = CalculateAnglefromCoordinates(nextCheckpointPosition, thisPod);
-            //var modAngle = turnAngle > 0 ? 18 : -18;
-            //slow down
-            var thrust = 0;
-            var slowerPod = CalculateFuturePosition(thisPod, thrust, 0, true);
-            //var destination = new Coordinates(){x = slowerPod.x , y =  slowerPod.y};
-
-            cmdNext = new Command() { Destination = nextCheckpointPosition, Thrust = thrust, FuturePodAfterCommand = slowerPod };
-        }
-
-        //next prediction
-        var cmdAnticipating = WouldPredictedMotionArriveAtTarget(10, isBoostAvailable, thisPod, checkpointAhead, nextCheckpointPosition);
-
-        //Console.Error.WriteLine($"Tot Predictions calc: {predictionList.Count()}, wouldReachTarget? {wouldReachTarget} ");
-
-        var cmd = cmdAnticipating != null ? cmdAnticipating : cmdNext;
-
-        //predict future position for enemy bots and friend
-        var enemy1 = runInfo.EnemyBots[0];
-        var enemy2 = runInfo.EnemyBots[1];
-        var enemy1Pos = CalculateFuturePosition(enemy1, 200, 0, true);
-        var enemy2Pos = CalculateFuturePosition(enemy2, 200, 0, true);
-
-        var distanceToE1 = (int)GetDeltaBetweenPods(cmd.FuturePodAfterCommand, enemy1Pos) + 1;
-        var distanceToE2 = (int)GetDeltaBetweenPods(cmd.FuturePodAfterCommand, enemy2Pos) + 1;
-
-        var speedE1 = (int)GetSpeedMagnitude(enemy1Pos) + 1;
-        var speedE2 = (int)GetSpeedMagnitude(enemy2Pos) + 1;
-        var thisSpeed = (int)GetSpeedMagnitude(cmd.FuturePodAfterCommand) + 1;
-        var speedThreshold = 400;
-        var shieldCollisionE1 = speedE1 > speedThreshold || thisSpeed > speedThreshold;
-        var shieldCollisionE2 = speedE2 > speedThreshold || thisSpeed > speedThreshold;
-        var distToDefend = 650;
-        if (distanceToE1 <= distToDefend && shieldCollisionE1 && IsCollisionPath(enemy1Pos, thisPod))
-        {
-            // return $"{cmd.destination.x} {cmd.destination.x} SHIELD {distanceToE1} {distanceToE2}";
-            //return $"0 0 SHIELD {speedE1},{speedE2}:{thisSpeed} = SHIELD";
-            return $"{cmd.Destination.X} {cmd.Destination.Y} SHIELD";
-        }
-
-        if (distanceToE2 <= distToDefend && shieldCollisionE2 && IsCollisionPath(enemy2Pos, thisPod))
-        {
-            return $"{cmd.Destination.X} {cmd.Destination.Y} SHIELD";
-        }
-
-        var speedBeingBlocked = 400;
-        var distanceBeingBlocked = 500;
-        //if (distanceToE1 <= distToDefend+ (distToDefend*0.1) || distanceToE2 <= distToDefend+ (distToDefend*0.1))
-
-        //Am i being blocked by E1
-        var isCollision1 = IsCollisionPath2(enemy1Pos, thisPod);
-        if ((distanceToE1 <= distanceBeingBlocked &&
-            thisSpeed <= speedBeingBlocked) && isCollision1)
-        {
-            //cmd.Destination.X += 1000;
-            //cmd.Destination.Y += 1000;
-            //cmd.Thrust = 200;
-
-            // return cmd.ToString() + $" {speedE1},{speedE2}:{thisSpeed}";
-            //cmd.Destination = new Coordinates{X = 8400, Y = 4700};
-            cmd.Destination = enemy2Pos.PosCoordinates;
-            cmd.Thrust = 200;
-            return cmd.ToString() + $" AVOID D1:{distanceToE1}, speed:{thisSpeed}. Collision: {isCollision1}";
-        }
-
-        //Am i being blocked by E2
-        var isCollision2 = IsCollisionPath2(enemy2Pos, thisPod);
-        if ((distanceToE2 <= distanceBeingBlocked &&
-            thisSpeed <= speedBeingBlocked) && isCollision2)//IsCollisionPath(enemy2Pos, thisPod))
-        {
-            //cmd.Destination.X += 1000;
-            //cmd.Destination.Y += 1000;
-            //cmd.Thrust = 200;
-
-            // return cmd.ToString() + $" {speedE1},{speedE2}:{thisSpeed}";
-            //cmd.Destination = new Coordinates{X = 8400, Y = 4700};
-            cmd.Destination = enemy1Pos.PosCoordinates;
-            cmd.Thrust = 200;
-            return cmd.ToString() + $" AVOID D2:{distanceToE2}, speed:{thisSpeed}. Collision: {isCollision2}";
-        }
-
-        //if(cmd != cmdAnticipating) Console.Error.WriteLine(" Not anticipating");
-        return cmd.ToString() + $" D1:{distanceToE1}, D2:{distanceToE2} speed:{thisSpeed}, C1: {isCollision1}, C2: {isCollision2}";// + " " +cmd.Destination; //+ $" {speedE1},{speedE2}:{thisSpeed}";
-
-    }
-    /*
-    public bool IsTrajectoryCollision(PodInfo thisPod, PodInfo enemyPod)
-    {
-
-    }
-    */
-    public Command GetOptimizedCommand(Coordinates nextCheckpointPosition, bool isBoostAvailable)
-    {
-        return GetOptimizedCommand(runInfo.MyBots[podIndex], nextCheckpointPosition, isBoostAvailable);
-    }
-
-    public Command GetOptimizedCommand(PodInfo startingPodInfo, Coordinates nextCheckpointPosition, bool isBoostAvailable, bool isPrint = false)
-    {
-        //check all angles and thrust combinations, brute force it for now
-        var shortestDistance = double.MaxValue;
-        var shortestAngleDistance = 360.0;
-        var bestThrust = -1;
-        var bestAngle = -20;
-        PodInfo bestFuturePod = null;
-        var listOfThrusts = new List<int>();
-        for (var thrust = 0; thrust <= 20; thrust++)
-        {
-            listOfThrusts.Add(thrust * 10);
-        }
-        if (isBoostAvailable) listOfThrusts.Add(650);
-        for (var angle = -18; angle <= 18; angle += 2)
-        {
-            foreach (var thrust in listOfThrusts)
-            {
-                var futurePod = CalculateFuturePosition(startingPodInfo, thrust, angle, true);
-                var angleDistance = CalculateAnglefromCoordinates(nextCheckpointPosition, futurePod);
-                var distance = GetDistanceToLocation(futurePod, nextCheckpointPosition);
-
-                var closerDist = distance < shortestDistance;
-                var sameDistLessRotate = (distance == shortestDistance) && (angleDistance < shortestAngleDistance);
-
-                //if(angleDistance < shortestAngleDistance)
-                //Console.Error.WriteLine($"{distance},{angle},{thrust}");
-                var toPrint = $"";
-                if (closerDist || sameDistLessRotate)
-                {
-                    shortestDistance = distance;
-                    bestThrust = thrust;
-                    bestAngle = angle;
-                    bestFuturePod = futurePod;
-                    shortestAngleDistance = angleDistance;
-                    if (angleDistance > shortestAngleDistance)
-                    {
-                        //bestThrust = 0;
-                    }
-                }
-            }
-        }
-        //Console.Error.WriteLine($"Best:{(int)shortestDistance},{bestAngle},{bestThrust}");
-        //calculate x y coors
-        var idealAimPosition = CalculateCoordinatesFromAngle(startingPodInfo, bestAngle);
-
-        var command = new Command() { Destination = idealAimPosition, Thrust = bestThrust, FuturePodAfterCommand = bestFuturePod };
-
-        return command;
-    }
-
-
-
-    #region utilities
-    public static bool IsPosBetweenBotAndTarget(PodInfo pod, Coordinates position, Coordinates target)
-    {
-        var deltaPosTargX = target.X - position.X;
-        var deltaPosTargY = target.Y - position.Y;
-
-        var isDeltaPosTargXPos = deltaPosTargX > 0;
-        var isDeltaPosTargYPos = deltaPosTargY > 0;
-
-        var deltaPodTargX = target.X - pod.X;
-        var deltaPodTargY = target.Y - pod.Y;
-        var isDeltaPodTargXPos = deltaPodTargX > 0;
-        var isDeltaPodTargYPos = deltaPodTargY > 0;
-
-        return Math.Abs(deltaPosTargX) < Math.Abs(deltaPodTargX) &&
-                Math.Abs(deltaPosTargY) < Math.Abs(deltaPodTargY) &&
-                isDeltaPosTargXPos == isDeltaPodTargXPos &&
-                isDeltaPosTargYPos == isDeltaPodTargYPos;
-
-    }
-
-    public static Coordinates CalculateDestinationFromSpeedVector(PodInfo pod, int thrustMultiplier)
-    {
-        return new Coordinates() { X = (int)(pod.Vx * thrustMultiplier * 0.85) + pod.X, Y = (int)(pod.Vy * thrustMultiplier * 0.85) + pod.Y };
-    }
-
-    public static Coordinates CalculateCoordinatesFromAngle(PodInfo pod, int angle)
-    {
-        //assume hypotenuse of 100 to give it some room
-        var hyp = 1500;
-        var angleRad = ConvertDegreesToRadians(angle + pod.Angle);
-        var destinationY = Math.Sin(angleRad) * hyp;
-        var destinationX = Math.Cos(angleRad) * hyp;
-        var result = new Coordinates();
-        result.X = (int)destinationX + pod.X;
-        result.Y = (int)destinationY + pod.Y;
-        return result;
-    }
-
-    public static double CalculateAnglefromCoordinates(Coordinates coords, PodInfo pod)
-    {
-        var xDelta = coords.X - pod.X;
-        var yDelta = coords.Y - pod.Y;
-
-        //in Rad
-        var ratio = Math.Abs(yDelta) / (Math.Abs(xDelta) * 1.0);
-        var angle = Math.Atan(ratio);
-        var angleDegrees = ConvertRadsToDegrees(angle);
-
-
-        //Console.Error.WriteLine($"calcAngle {angle}, degAngle {angleDegrees}, y {yDelta}, x {xDelta}, ratio {ratio}");
-        //find out quadrant
-        var quadrant = 0;
-        if (yDelta >= 0 && xDelta >= 0)
-        {
-            quadrant = 0;
-        }
-        else if (yDelta >= 0 && xDelta < 0)
-        {
-            quadrant = 1;
-            angleDegrees = (90 - angleDegrees) + 90;
-        }
-        else if (yDelta < 0 && xDelta < 0)
-        {
-            quadrant = 2;
-            angleDegrees += 180;
-        }
-        else
-        {
-            quadrant = 3;
-            angleDegrees = (360 - angleDegrees);
-        }
-
-        var angleToTarg = Math.Abs(pod.Angle - angleDegrees);
-        var finalAngle = angleToTarg <= 180 ? angleToTarg : 360 - angleToTarg;
-
-
-        //Console.Error.WriteLine($"point2pointAngle {angleDegrees}, finalAngle {finalAngle} quad {quadrant} faceAngle {pod.angle}");
-        return finalAngle;
-
-    }
-
-    public static double CalculateAngleFaceVsSpeed(PodInfo pod)
-    {
-        //in Rad
-        var ratio = Math.Abs(pod.Vy) / (Math.Abs(pod.Vx) * 1.0);
-        var angle = Math.Atan(ratio);
-        var angleDegrees = ConvertRadsToDegrees(angle);
-
-        var yDelta = pod.Vy;
-        var xDelta = pod.Vx;
-
-        //Console.Error.WriteLine($"calcAngle {angle}, degAngle {angleDegrees}, y {yDelta}, x {xDelta}, ratio {ratio}");
-        //find out quadrant
-        var quadrant = 0;
-        if (yDelta >= 0 && xDelta >= 0)
-        {
-            quadrant = 0;
-        }
-        else if (yDelta >= 0 && xDelta < 0)
-        {
-            quadrant = 1;
-            angleDegrees = (90 - angleDegrees) + 90;
-        }
-        else if (yDelta < 0 && xDelta < 0)
-        {
-            quadrant = 2;
-            angleDegrees += 180;
-        }
-        else
-        {
-            quadrant = 3;
-            angleDegrees = (360 - angleDegrees);
-        }
-
-        var angleToTarg = Math.Abs(pod.Angle - angleDegrees);
-        var finalAngle = angleToTarg <= 180 ? angleToTarg : 360 - angleToTarg;
-
-
-        //Console.Error.WriteLine($"point2pointAngle {angleDegrees}, finalAngle {finalAngle} quad {quadrant} faceAngle {pod.angle}");
-        return finalAngle;
-
-    }
-
+public static class Utilities
+{
+    public const int CheckPointRadius = 600;
     public static double ConvertDegreesToRadians(double degrees)
     {
-        double radians = (Math.PI / 180) * degrees;
-        return (radians);
+        var radians = (Math.PI / 180) * degrees;
+        return radians;
     }
 
     public static double ConvertRadsToDegrees(double rads)
@@ -712,7 +205,7 @@ public class PodInstance
         return rads / (Math.PI / 180);
     }
 
-    public static PodInfo CalculateFuturePosition(PodInfo pod, int proposedThrust, int proposedFacingAngleToAdd, bool print)
+    public static PodInfo CalculateFuturePosition(PodInfo pod, int proposedThrust, int proposedFacingAngleToAdd)
     {
         if (Math.Abs(proposedFacingAngleToAdd) > 18) throw new Exception($"Angle to add too large {proposedFacingAngleToAdd}");
         var a = pod.Angle + proposedFacingAngleToAdd;
@@ -730,18 +223,13 @@ public class PodInstance
         result.Angle = angleAbsolute;
         result.Vx = (int)(speedVectorX * 0.85);
         result.Vy = (int)(speedVectorY * 0.85);
-        result.NextCheckPointId = pod.NextCheckPointId;
+        result.NextCheckPointId = -1; //needs to be calculated, here we just calculate position and stuff
         return result;
     }
 
-
-    public static double GetDistanceToLocation(PodInfo pod, Coordinates coords)
+    public static double GetPodDistanceToCoordinates(PodInfo pod, Coordinates coords)
     {
-        var c1 = new Coordinates();
-        c1.X = pod.X;
-        c1.Y = pod.Y;
-
-        return GetDistanceBetweenCoords(c1, coords);
+        return GetDistanceBetweenCoords(pod.PosCoordinates, coords);
     }
 
     public static double GetDeltaBetweenPods(PodInfo pod1, PodInfo pod2)
@@ -762,257 +250,74 @@ public class PodInstance
         var deltaX = c1.X - c2.X;
         var deltaY = c1.Y - c2.Y;
 
-        return Math.Sqrt(Math.Pow(deltaX, 2) + Math.Pow(deltaY, 2));
+        return GetHypotenuseBetweenValues(deltaX, deltaY);
     }
-    #endregion
+
+    public static double GetHypotenuseBetweenValues(int x, int y)
+    {
+        return Math.Sqrt(Math.Pow(x, 2) + Math.Pow(y, 2));
+    }
 }
 
 class Player
 {
-
     static void Main(string[] args)
     {
         //Fetch game input
-        var GameInfo = GetGameInfo();
-        PodInstance myPod0 = new PodInstance(0, GameInfo);
-        PodInstance myPod1 = new PodInstance(1, GameInfo);
+        var gameInfo = GetGameInfo();
 
-        var isBoostAvailable0 = true;
-        var isBoostAvailable1 = true;
-        var iter = 0;
+        //Instantiate instances for pods and pass the GameInfo
+        var podInstances = new Dictionary<Pods, PodInstance>();
+        foreach (Pods enumEntry in Enum.GetValues(typeof(Pods)))
+        {
+            podInstances.Add(enumEntry, new PodInstance { GameInfo = gameInfo });
+        }
 
-
-        var lastCheckPointEnemy0 = -1;
-        var lastCheckPointF0 = -1;
-        var lastCheckPointF1 = -1;
-        var lapsE0 = 0;
-        var lapsE1 = 0;
-        var lapsF0 = 0;
-        var lapsF1 = 0;
-        var lastCheckPointEnemy1 = -1;
-        var switchRole = false;
         while (true)
         {
-            iter++;
+            //Fetch info for run
+            var runInfo = GetRunInfo();
 
-            if (iter > 35)
+            //Populate current pod info for each pod, this triggers populating most internal variables tracking its status
+            foreach (var (key, value) in runInfo.Pods)
             {
-                isBoostAvailable0 = true;
-                isBoostAvailable1 = true;
-            }
-
-            if (iter == 110)
-            {
-                //isBoostAvailable0 = true;
-            }
-
-            if (iter == 100)
-            {
-                //isBoostAvailable1 = true;
-            }
-            //Fetch info
-            var RunInfo = GetRunInfo();
-
-            var n0 = RunInfo.EnemyBots[0].NextCheckPointId;
-            var n1 = RunInfo.EnemyBots[1].NextCheckPointId;
-            var f0 = RunInfo.MyBots[0].NextCheckPointId;
-            var f1 = RunInfo.MyBots[1].NextCheckPointId;
-
-            if (n0 != lastCheckPointEnemy0 && n0 == 1)
-            {
-                ;
-                //Console.Error.WriteLine($"mod in if{n0 % GameInfo.checkpointCount}");
-                lapsE0++;
-            }
-
-            if (n1 != lastCheckPointEnemy1 && n1 == 1)
-            {
-                ;
-                //Console.Error.WriteLine($"mod in if {n1},{n1 % GameInfo.checkpointCount}");
-                lapsE1++;
-
-            }
-
-            if (f0 != lastCheckPointF0 && f0 == 1)
-            {
-                ;
-                //Console.Error.WriteLine($"mod in if {n1},{n1 % GameInfo.checkpointCount}");
-                lapsF0++;
-
-            }
-
-            if (f1 != lastCheckPointF1 && f1 == 1)
-            {
-                ;
-                //Console.Error.WriteLine($"mod in if {n1},{n1 % GameInfo.checkpointCount}");
-                lapsF1++;
-
-            }
-            RunInfo.EnemyBots[1].LapNumber = lapsE1;
-            RunInfo.EnemyBots[0].LapNumber = lapsE0;
-            RunInfo.MyBots[0].LapNumber = lapsF0;
-            RunInfo.MyBots[1].LapNumber = lapsF1;
-            lastCheckPointEnemy0 = n0;
-            lastCheckPointEnemy1 = n1;
-            lastCheckPointF0 = f0;
-            lastCheckPointF1 = f1;
-
-            //Console.Error.WriteLine($"nextCheckPoint e1 {checkPointHistoryEnemy0[checkPointHistoryEnemy0.Count()-1]} e2 {checkPointHistoryEnemy1[checkPointHistoryEnemy1.Count()-1]}");
-            //Update bots
-            myPod0.runInfo = RunInfo;
-            myPod1.runInfo = RunInfo;
-
-            if (iter == 1)
-            {
-                var coors0 = GameInfo.Checkpoints[RunInfo.MyBots[0].NextCheckPointId];
-                var coors1 = GameInfo.Checkpoints[RunInfo.MyBots[1].NextCheckPointId];
-                Console.WriteLine($"{coors0.X} {coors0.Y} 200");
-                Console.WriteLine($"{coors1.X} {coors1.Y} 200");
-                continue;
-            }
-
-            //win
-            var cmd0 = myPod0.GetCommand(isBoostAvailable0);
-            var cmd1 = myPod1.GetCommand(isBoostAvailable1);
-            //var cmd0 = myPod0.GetDefenseCommand2(isBoostAvailable1, null);
-            //var cmd1 = myPod1.GetDefenseCommand2(isBoostAvailable1, cmd0);
-
-            /*
-                        //if(iter % 75 == 0)  myPod1._engagedInDefense) switchRole = !switchRole;
-                        if(myPod0._engagedInDefense && !myPod1._engagedInDefense){
-                            cmd1 = myPod1.GetCommand(isBoostAvailable1);
-                        }else if(myPod1._engagedInDefense && !myPod0._engagedInDefense){
-                            cmd0 = myPod0.GetCommand(isBoostAvailable1);
-                        }else if(myPod0._engagedInDefense && myPod1._engagedInDefense){
-                            if(RunInfo.MyBots[0].NextCheckPointId > RunInfo.MyBots[1].NextCheckPointId){
-                                cmd0 = myPod0.GetCommand(isBoostAvailable0);
-                            }else{
-                                cmd1 = myPod1.GetCommand(isBoostAvailable1);
-                            }
-                        }
-            */
-
-            /*
-                        if(lapsF0 > lapsF1 && 
-                            lapsF0 > lapsE0 &&
-                            lapsF0 > lapsE1 ){
-                                cmd0 = myPod0.GetCommand(isBoostAvailable0);
-                            }
-
-                        if(lapsF1 > lapsF0 && 
-                            lapsF1 > lapsE0 &&
-                            lapsF1 > lapsE1 ){
-                                cmd1 = myPod1.GetCommand(isBoostAvailable0);
-                            }
-                            */
-
-            /*
-                        if(lapsF1 > lapsE0 && lapsF1 > lapsE1 &&
-                        lapsF0 > lapsE0 && lapsF0 > lapsE1){
-                            cmd1 = myPod1.GetCommand(isBoostAvailable0);
-                            cmd0 = myPod0.GetCommand(isBoostAvailable0);
-                        }
-            */
-            //if(iter % 50 == 0 && !switchRole) switchRole = !switchRole;
-            var switchedRoleIndex = 0;
-            if ((lapsE0 > 0 || lapsE1 > 0) && !switchRole) switchRole = !switchRole;
-            if (switchRole)
-            {
-                var pod0 = myPod0.runInfo.MyBots[0];
-                var pod1 = myPod0.runInfo.MyBots[1];
-                var pod0_distToTarget = PodInstance.GetDistanceToLocation(pod0, GameInfo.Checkpoints[pod0.NextCheckPointId]);
-                var pod1_distToTarget = PodInstance.GetDistanceToLocation(pod1, GameInfo.Checkpoints[pod1.NextCheckPointId]);
-
-                if (lapsF0 < lapsF1)
+                if (podInstances.ContainsKey(key))
                 {
-                    switchedRoleIndex = 0;
-                    cmd0 = myPod0.GetDefenseCommand2(isBoostAvailable1, null);
-                }
-                else if (lapsF1 < lapsF0)
-                {
-                    switchedRoleIndex = 1;
-                    cmd1 = myPod1.GetDefenseCommand2(isBoostAvailable1, null);
+                    podInstances[key].CurrentPodInfo = value;
                 }
                 else
                 {
-                    var c0 = RunInfo.MyBots[0].NextCheckPointId == 0 ? 10 : RunInfo.MyBots[0].NextCheckPointId;
-                    var c1 = RunInfo.MyBots[1].NextCheckPointId == 0 ? 10 : RunInfo.MyBots[1].NextCheckPointId;
-                    if (c0 < c1)
-                    {
-                        switchedRoleIndex = 0;
-                        cmd0 = myPod0.GetDefenseCommand2(isBoostAvailable0, null);
-                    }
-                    else
-                    {
-                        switchedRoleIndex = 1;
-                        cmd1 = myPod1.GetDefenseCommand2(isBoostAvailable1, null);
-                    }
+                    var podInstance = new PodInstance { CurrentPodInfo = value };
+                    podInstances.Add(key, podInstance);
                 }
+            }
 
-                /*
-                if(lapsF1 > lapsF0 && 
-                    lapsF1 > lapsE0 &&
-                    lapsF1 > lapsE1 ){
-                        cmd1 = myPod1.GetCommand(isBoostAvailable0);
-                    }
+            //Calculate the ranking of each pod
+            var sortedRankList = podInstances
+                .OrderByDescending(podInstanceEntry => podInstanceEntry.Value.CheckPointsReached) // sort by most checkpoints
+                .ThenBy(podInstanceEntry => podInstanceEntry.Value.DistanceToNextCheckpoint)      // Then by smallest DistanceToNextCheckpoint
+                .ToList();
 
-                    if(RunInfo.MyBots[0].NextCheckPointId > RunInfo.MyBots[1].NextCheckPointId){
-                    cmd0 = myPod0.GetDefenseCommand2(isBoostAvailable1, null);
-                    }else{
-                        cmd1 = myPod1.GetDefenseCommand2(isBoostAvailable1, null);
-                    }
-                 */
-                //cmd0 = myPod0.GetCommand(isBoostAvailable0);
-                //cmd1 = myPod1.GetCommand(isBoostAvailable1);
-
-                //cmd0 = myPod0.GetDefenseCommand2(isBoostAvailable1, null);
-                //cmd1 = myPod0.GetDefenseCommand2(isBoostAvailable1, null);
+            var rank = 1;
+            foreach (var (rankKey, _) in sortedRankList)
+            {
+                podInstances[rankKey].RankingInGame = rank;
+                rank++;
+                Console.Error.WriteLine($"PodName:{rankKey},{podInstances[rankKey]}");
             }
 
 
-            //var cmd1 = cmd0;
-
-            if (isBoostAvailable0) isBoostAvailable0 = !cmd0.Contains("BOOST");
-            if (isBoostAvailable1) isBoostAvailable1 = !cmd1.Contains("BOOST");
-
-            //Console.Error.WriteLine($"#1 {RunInfo.MyBots[0]}: cmd {cmd0} ");
-            //Console.Error.WriteLine($"#2 {RunInfo.MyBots[1]}: cmd {cmd1}");
-
-
-            /*
-            //Looks like we are blocking well, just defend
-            if(myPod0._consecutiveBlocksCount > 20 || myPod1._consecutiveBlocksCount > 20){ 
-                Console.Error.WriteLine($"GOOD BLOCK");
-                if(switchedRoleIndex == 0){
-                    cmd1 = myPod0.GetDefenseCommand2(isBoostAvailable1, null);
-                }else{
-                    cmd0 = myPod0.GetDefenseCommand2(isBoostAvailable1, null);
-                }
-            }
-            */
-            Console.WriteLine(cmd0);
+            //win
+            var pod1Destination = gameInfo.Checkpoints[runInfo.Pods[Pods.MyPod1].NextCheckPointId];
+            var pod2Destination = gameInfo.Checkpoints[runInfo.Pods[Pods.MyPod2].NextCheckPointId];
+            var cmd1 = new Command { Destination = pod1Destination, Thrust = 100, FuturePodAfterCommand = null };
+            var cmd2 = new Command { Destination = pod2Destination, Thrust = 100, FuturePodAfterCommand = null };
             Console.WriteLine(cmd1);
+            Console.WriteLine(cmd2);
 
         }
     }
 
-    public static void TrackPodPos(RunInfo run, GameInfo game)
-    {
-
-    }
-    /*
-        public static int CalculatePower(PodInfo info){
-                //calculate speeds
-                var ratio = Math.Abs(nextCheckpointAngle)/180.0;
-                var pwrOut = (ratio * 100);
-                var pwrPre = Math.Round(100 - pwrOut);
-                //var pwr = pwrPre > 80 ? 100 :
-                //          pwrPre < 50 ? 0 : pwrPre;
-                var pwr = pwrPre > 70 ? 100 : pwrPre;
-                //var pwr = pwrPre;
-
-        }
-       */
 
     public static PodInfo GetPodInfo()
     {
@@ -1030,13 +335,14 @@ class Player
     public static RunInfo GetRunInfo()
     {
         var response = new RunInfo();
-        //two my bots, could make a loop but lazy
-        response.MyBots.Add(GetPodInfo());
-        response.MyBots.Add(GetPodInfo());
 
-        //two enemy bots, could make a loop but lazy
-        response.EnemyBots.Add(GetPodInfo());
-        response.EnemyBots.Add(GetPodInfo());
+        //two my bots
+        response.Pods.Add(Pods.MyPod1, GetPodInfo());
+        response.Pods.Add(Pods.MyPod2, GetPodInfo());
+
+        //two enemy bots
+        response.Pods.Add(Pods.EnemyPod1, GetPodInfo());
+        response.Pods.Add(Pods.EnemyPod2, GetPodInfo());
 
         return response;
     }
@@ -1056,21 +362,4 @@ class Player
         }
         return response;
     }
-
-    public static bool IsOpponentClose(int x, int y, int oX, int oY)
-    {
-        var xPow = Math.Pow(Math.Abs(oX - x), 2);
-        var yPow = Math.Pow(Math.Abs(oY - y), 2);
-        var distance = Math.Sqrt(xPow + yPow);
-        Console.Error.WriteLine($"Distance:{distance}");
-        return distance < 600;
-    }
-
-    public static bool IsOpponentInMyWay(int x, int y, int oX, int oY, int chkX, int chkY)
-    {
-        return Math.Abs(oX - chkX) < Math.Abs(x - chkX) &&
-                Math.Abs(oY - chkY) < Math.Abs(y - chkY);
-    }
-
-
 }
