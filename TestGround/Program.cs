@@ -79,6 +79,7 @@ public class PodInstance
 {
     GameInfo gameInfo;
     public bool _engagedInDefense = false;
+    public int _consecutiveBlocksCount = 0;
     RunInfo PrevRunInfo = null;
     private RunInfo _runInfo = null;
     public RunInfo runInfo
@@ -107,6 +108,7 @@ public class PodInstance
         var enemy1DistToTarget = GetDistanceToLocation(enemy1Pod, gameInfo.Checkpoints[enemy1Pod.NextCheckPointId]);
         var enemy2DistToTarget = GetDistanceToLocation(enemy2Pod, gameInfo.Checkpoints[enemy2Pod.NextCheckPointId]);
 
+        //return enemy1DistToTarget < enemy2DistToTarget ? 0 : 1;
         if (enemy1Pod.LapNumber == enemy2Pod.LapNumber)
         {
             if (enemy1Pod.NextCheckPointId == enemy2Pod.NextCheckPointId)
@@ -137,8 +139,8 @@ public class PodInstance
         var friend = runInfo.MyBots[friendIndex];
         var enemy1 = runInfo.EnemyBots[0];
         var enemy2 = runInfo.EnemyBots[1];
-        var enemyPos1 = CalculateFuturePosition(enemy1, 400, 0, true);
-        var enemyPos2 = CalculateFuturePosition(enemy2, 400, 0, true);
+        var enemyPos1 = CalculateFuturePosition(enemy1, 200, 0, true);
+        var enemyPos2 = CalculateFuturePosition(enemy2, 200, 0, true);
         var enemyPos1R = CalculateFuturePosition(enemy1, 200, 0, true);
         var enemyPos2R = CalculateFuturePosition(enemy2, 200, 0, true);
         var myPos = CalculateFuturePosition(thisPod, 200, 0, true);
@@ -150,8 +152,8 @@ public class PodInstance
         var enemy1Speed = (int)GetSpeedMagnitude(enemy1);
         var enemy2Speed = (int)GetSpeedMagnitude(enemy2);
         var mySpeed = (int)GetSpeedMagnitude(thisPod);
-        var speedToDefend = 10;
-        var distToDefend = 1250;
+        var speedToDefend = 400;
+        var distToDefend = 1000;
         if (distanceToE <= distToDefend && (enemy1Speed > speedToDefend || mySpeed > speedToDefend))
         {
             _engagedInDefense = true;
@@ -166,49 +168,95 @@ public class PodInstance
             return $"{enemyPos2.X} {enemyPos2.Y} SHIELD  v2:{enemy2Speed}, {mySpeed}";
         }
 
+
+
+
         var distClose = 2500;
         var distCloseF = 900;
         var enemyToDefendIndex = EnemyToDefend();
         var enemyToDefend = enemyToDefendIndex == 0 ? enemyPos1 : enemyPos2;
         var chpId = (enemyToDefend.NextCheckPointId); //% gameInfo.checkpointCount;
-        var checkPoint = gameInfo.Checkpoints[(chpId)];
+        var checkPoint = gameInfo.Checkpoints[chpId];
+        var nextCheckPoint = gameInfo.Checkpoints[(chpId + 1) % gameInfo.CheckpointCount];
+        //var checkPoint = gameInfo.Checkpoints[(1)];
+
+        Coordinates checkPointToGuard = null;
+        var guardingNextNextCheckPoint = false;
+        if (GetDistanceToLocation(enemyToDefend, checkPoint) >= GetDistanceToLocation(thisPod, checkPoint))
+        {
+            checkPointToGuard = checkPoint;
+        }
+        else
+        {
+            checkPointToGuard = nextCheckPoint;
+            guardingNextNextCheckPoint = true;
+        }
 
         if (distanceToFriend < distCloseF)
         {
-            var c = GetOptimizedCommand(thisPod.PosCoordinates, false);
-            c.Thrust = -1;
-            return GetOptimizedCommand(thisPod.PosCoordinates, false) + $" F";
+            var c = GetOptimizedCommand(enemyToDefend.PosCoordinates, false);
+            //c.Thrust = -1;
+            c.Thrust = 200;
+            return GetOptimizedCommand(enemyToDefend.PosCoordinates, false) + $" F";
         }
 
         //var enemyAttack = closestEnemy == 0 ? enemyPos1 : enemyPos2;
         var enemyAttack = enemyToDefend;
-        var distanceToEdefend = (int)GetDeltaBetweenPods(myPos, enemyAttack) + 1;
+        //var distanceToEdefend = (int)GetDeltaBetweenPods(myPos, enemyAttack) + 1;
+
+        var distanceEnemyToTarget = GetDistanceBetweenCoords(enemyAttack.PosCoordinates,
+            gameInfo.Checkpoints[enemyAttack.NextCheckPointId]);
         //if ( distanceToE < distClose )//|| distanceToE2 < distClose)
-        if (distanceToEdefend < distClose)//|| distanceToE2 < distClose)
+        //if (distanceToEdefend < distClose )//|| distanceToE2 < distClose)
+        var enemySpeed = (int)GetSpeedMagnitude(enemyToDefend) + 1;
+        var enemyTimeToCoverDistance = distanceEnemyToTarget / enemySpeed;
+        Console.Error.WriteLine($"EnemySpeed: {enemySpeed}, distEToTarg: {distanceEnemyToTarget}, time:{enemyTimeToCoverDistance}");
+        if ((enemyTimeToCoverDistance <= 10 || enemySpeed < 100) && !guardingNextNextCheckPoint)
         {
-            var ex = enemyAttack.X - (int)((enemyAttack.X - checkPoint.X) * 0.2);
-            var ey = enemyAttack.Y - (int)((enemyAttack.Y - checkPoint.Y) * 0.2);
+            var ex = enemyAttack.X - (int)((enemyAttack.X - checkPointToGuard.X) * 0.2);
+            var ey = enemyAttack.Y - (int)((enemyAttack.Y - checkPointToGuard.Y) * 0.2);
             var c = new Coordinates() { X = ex, Y = ey };
             _engagedInDefense = true;
+
+            if (mySpeed < 500)
+            {
+                _consecutiveBlocksCount += 1;
+            }
+
             //return GetOptimizedCommand(enemyAttack.PosCoordinates, boostAvailable) + $" enemy{enemyToDefendIndex} CEF, {enemyAttack.PosCoordinates}";
             return GetOptimizedCommand(c, boostAvailable) + $" enemy{enemyToDefendIndex} CEF, {enemyAttack.PosCoordinates}";
         }
         _engagedInDefense = false;
-        //return friendCmd + $"f:{distanceToFriend}";
-        var checkPoint2 = gameInfo.Checkpoints[((chpId) % gameInfo.CheckpointCount)];
-
 
         //half way through path
 
         //var newX = enemyToDefend.X - (int)((enemyToDefend.X - checkPoint.X) / 1.75);
         //var newY = enemyToDefend.Y - (int)((enemyToDefend.Y - checkPoint.Y) / 1.75);
-        var newX = enemyToDefend.X - (int)((enemyToDefend.X - checkPoint.X) * 0.8);
-        var newY = enemyToDefend.Y - (int)((enemyToDefend.Y - checkPoint.Y) * 0.8);
+        //var newX = enemyToDefend.X - (int)((enemyToDefend.X - nextCheckPoint.X) * 0.7);
+        //var newY = enemyToDefend.Y - (int)((enemyToDefend.Y - nextCheckPoint.Y) * 0.7);
+
+
+
+        var centerX = 7800;
+        var centerY = 4400;
+        var newX = centerX - (int)((centerX - checkPointToGuard.X) * 0.8);
+        var newY = centerY - (int)((centerY - checkPointToGuard.Y) * 0.8);
+
+        //I am guarding the checkpoint where enemy is coming, get in the way
+        if (!guardingNextNextCheckPoint)
+        {
+            newX = enemyAttack.X - (int)((enemyAttack.X - checkPointToGuard.X) * 0.8);
+            newY = enemyAttack.Y - (int)((enemyAttack.Y - checkPointToGuard.Y) * 0.8);
+        }
+
         var coords = new Coordinates() { X = newX, Y = newY };
         var fChk = runInfo.MyBots[friendIndex].NextCheckPointId == 0 ? gameInfo.CheckpointCount : runInfo.MyBots[friendIndex].NextCheckPointId;
         //var coords = gameInfo.Checkpoints[0];
         //var coords = checkPoint;
 
+
+        //Get to the center of the map based on centroids of checkpoints
+        /*
         if (GetDistanceToLocation(enemyToDefend, coords) < GetDistanceToLocation(thisPod, coords))
         {
 
@@ -231,6 +279,7 @@ public class PodInstance
                 coords.Y = centroidY;
             }
         }
+        */
 
         if (runInfo.MyBots[friendIndex].NextCheckPointId == 0)
         {
@@ -242,21 +291,26 @@ public class PodInstance
         var cmd = GetOptimizedCommand(coords, false);
         var speed = Math.Sqrt(Math.Pow(thisPod.Vx, 2) + Math.Pow(thisPod.Vy, 2));
 
-        if (distanceToTarget < 1000 && thisPod.Vx + thisPod.Vx < 10)
+        /*
+                if (distanceToTarget < 1000 && thisPod.Vx + thisPod.Vx < 10)
+                {
+                    cmd = GetOptimizedCommand(new Coordinates() { X = newX, Y = newY }, false);
+                    cmd.Thrust = 1;
+                }
+        */
+        if (WouldStoppingNowWouldStopAtTarget(thisPod, coords))
         {
-            cmd = GetOptimizedCommand(new Coordinates() { X = newX, Y = newY }, false);
-            cmd.Thrust = 1;
-        }
-
-        else if (distanceToTarget / (speed + 1) < 7)
-        {
+            //TODO: need to calculate the command so that it stops at destination
             cmd.Thrust = 0;
-            //Console.Error.WriteLine($"thr={cmd.Thrust},d{(int)distanceToTarget}, sp: {speed}");
+            cmd.Destination = enemyToDefend.PosCoordinates;
+            Console.Error.WriteLine($"thr={cmd.Thrust},d{(int)distanceToTarget}, sp: {speed}");
         }
         else if (cmd.Thrust > 100 && cmd.Thrust != 650)
         {
             //cmd.Thrust = 100;
         }
+
+        _consecutiveBlocksCount = 0;
         return cmd.ToString() + $" enemy{enemyToDefendIndex} MH {coords},chp{chpId}, th{cmd.Thrust}, d:{(int)distanceToTarget}";
 
         //return GetOptimizedCommand(coords, false) + $" enemy{enemyToDefendIndex} MH {coords},chp{chpId}";
@@ -304,6 +358,30 @@ public class PodInstance
         return null;
     }
 
+    //TODO: this would try to make it so that commands plan to stop at target perfectly and get there as fast as possible
+    public bool WouldStoppingNowWouldStopAtTarget(PodInfo pod, Coordinates destination)
+    {
+        PodInfo futurePod = pod;
+        while (true)
+        {
+            futurePod = CalculateFuturePosition(futurePod, 0, 0, false);
+            var distance = GetDistanceToLocation(futurePod, destination);
+            if (distance < 1500)
+            {
+                return true;
+            }
+            if (GetSpeed(futurePod) <= 0)
+            {
+                return false;
+            }
+        }
+    }
+
+    public double GetSpeed(PodInfo pod)
+    {
+        return Math.Sqrt(Math.Pow(pod.Vx, 2) + Math.Pow(pod.Vy, 2));
+    }
+
     public bool IsCollisionPath(PodInfo podA, PodInfo podB)
     {
         //no collision sum of vectors
@@ -320,6 +398,19 @@ public class PodInstance
         return (ratio > 0.4);
         //return true;
     }
+
+    public bool IsCollisionPath2(PodInfo podA, PodInfo podB)
+    {
+        //no collision sum of vectors
+        var x = podA.Vx + podB.Vx;
+        var y = podA.Vy + podB.Vy;
+        var absX = Math.Abs(podA.Vx) + Math.Abs(podB.Vx);
+        var absY = Math.Abs(podA.Vy) + Math.Abs(podB.Vy);
+
+        return (x < absX || y < absY);
+        //return true;
+    }
+
     public string GetCommand(bool isBoostAvailable)
     {
         isBoostAvailable = false; //boost only available for defense
@@ -366,7 +457,7 @@ public class PodInstance
         var speedE1 = (int)GetSpeedMagnitude(enemy1Pos) + 1;
         var speedE2 = (int)GetSpeedMagnitude(enemy2Pos) + 1;
         var thisSpeed = (int)GetSpeedMagnitude(cmd.FuturePodAfterCommand) + 1;
-        var speedThreshold = 650;
+        var speedThreshold = 400;
         var shieldCollisionE1 = speedE1 > speedThreshold || thisSpeed > speedThreshold;
         var shieldCollisionE2 = speedE2 > speedThreshold || thisSpeed > speedThreshold;
         var distToDefend = 650;
@@ -382,18 +473,44 @@ public class PodInstance
             return $"{cmd.Destination.X} {cmd.Destination.Y} SHIELD";
         }
 
+        var speedBeingBlocked = 400;
+        var distanceBeingBlocked = 500;
         //if (distanceToE1 <= distToDefend+ (distToDefend*0.1) || distanceToE2 <= distToDefend+ (distToDefend*0.1))
-        if (distanceToE1 <= distToDefend || distanceToE2 <= distToDefend)
+
+        //Am i being blocked by E1
+        var isCollision1 = IsCollisionPath2(enemy1Pos, thisPod);
+        if ((distanceToE1 <= distanceBeingBlocked &&
+            thisSpeed <= speedBeingBlocked) && isCollision1)
         {
             //cmd.Destination.X += 1000;
             //cmd.Destination.Y += 1000;
             //cmd.Thrust = 200;
 
-            return cmd.ToString() + $" {speedE1},{speedE2}:{thisSpeed}";
+            // return cmd.ToString() + $" {speedE1},{speedE2}:{thisSpeed}";
+            //cmd.Destination = new Coordinates{X = 8400, Y = 4700};
+            cmd.Destination = enemy2Pos.PosCoordinates;
+            cmd.Thrust = 200;
+            return cmd.ToString() + $" AVOID D1:{distanceToE1}, speed:{thisSpeed}. Collision: {isCollision1}";
+        }
+
+        //Am i being blocked by E2
+        var isCollision2 = IsCollisionPath2(enemy2Pos, thisPod);
+        if ((distanceToE2 <= distanceBeingBlocked &&
+            thisSpeed <= speedBeingBlocked) && isCollision2)//IsCollisionPath(enemy2Pos, thisPod))
+        {
+            //cmd.Destination.X += 1000;
+            //cmd.Destination.Y += 1000;
+            //cmd.Thrust = 200;
+
+            // return cmd.ToString() + $" {speedE1},{speedE2}:{thisSpeed}";
+            //cmd.Destination = new Coordinates{X = 8400, Y = 4700};
+            cmd.Destination = enemy1Pos.PosCoordinates;
+            cmd.Thrust = 200;
+            return cmd.ToString() + $" AVOID D2:{distanceToE2}, speed:{thisSpeed}. Collision: {isCollision2}";
         }
 
         //if(cmd != cmdAnticipating) Console.Error.WriteLine(" Not anticipating");
-        return cmd.ToString();// + " " +cmd.Destination; //+ $" {speedE1},{speedE2}:{thisSpeed}";
+        return cmd.ToString() + $" D1:{distanceToE1}, D2:{distanceToE2} speed:{thisSpeed}, C1: {isCollision1}, C2: {isCollision2}";// + " " +cmd.Destination; //+ $" {speedE1},{speedE2}:{thisSpeed}";
 
     }
     /*
@@ -797,16 +914,23 @@ class Player
                         }
             */
             //if(iter % 50 == 0 && !switchRole) switchRole = !switchRole;
+            var switchedRoleIndex = 0;
             if ((lapsE0 > 0 || lapsE1 > 0) && !switchRole) switchRole = !switchRole;
             if (switchRole)
             {
+                var pod0 = myPod0.runInfo.MyBots[0];
+                var pod1 = myPod0.runInfo.MyBots[1];
+                var pod0_distToTarget = PodInstance.GetDistanceToLocation(pod0, GameInfo.Checkpoints[pod0.NextCheckPointId]);
+                var pod1_distToTarget = PodInstance.GetDistanceToLocation(pod1, GameInfo.Checkpoints[pod1.NextCheckPointId]);
 
                 if (lapsF0 < lapsF1)
                 {
+                    switchedRoleIndex = 0;
                     cmd0 = myPod0.GetDefenseCommand2(isBoostAvailable1, null);
                 }
                 else if (lapsF1 < lapsF0)
                 {
+                    switchedRoleIndex = 1;
                     cmd1 = myPod1.GetDefenseCommand2(isBoostAvailable1, null);
                 }
                 else
@@ -815,10 +939,12 @@ class Player
                     var c1 = RunInfo.MyBots[1].NextCheckPointId == 0 ? 10 : RunInfo.MyBots[1].NextCheckPointId;
                     if (c0 < c1)
                     {
+                        switchedRoleIndex = 0;
                         cmd0 = myPod0.GetDefenseCommand2(isBoostAvailable0, null);
                     }
                     else
                     {
+                        switchedRoleIndex = 1;
                         cmd1 = myPod1.GetDefenseCommand2(isBoostAvailable1, null);
                     }
                 }
@@ -852,6 +978,18 @@ class Player
             //Console.Error.WriteLine($"#1 {RunInfo.MyBots[0]}: cmd {cmd0} ");
             //Console.Error.WriteLine($"#2 {RunInfo.MyBots[1]}: cmd {cmd1}");
 
+
+            /*
+            //Looks like we are blocking well, just defend
+            if(myPod0._consecutiveBlocksCount > 20 || myPod1._consecutiveBlocksCount > 20){ 
+                Console.Error.WriteLine($"GOOD BLOCK");
+                if(switchedRoleIndex == 0){
+                    cmd1 = myPod0.GetDefenseCommand2(isBoostAvailable1, null);
+                }else{
+                    cmd0 = myPod0.GetDefenseCommand2(isBoostAvailable1, null);
+                }
+            }
+            */
             Console.WriteLine(cmd0);
             Console.WriteLine(cmd1);
 
