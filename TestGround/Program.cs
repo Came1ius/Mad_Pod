@@ -104,9 +104,9 @@ public class RunInfo
     public override string ToString()
     {
         var response = "";
-        foreach (var bot in Pods)
+        foreach (var (key, value) in Pods)
         {
-            response += $"Bot:{bot.Key}: Details:{bot.Value} \n";
+            response += $"Bot:{key}: Details:{value} \n";
         }
         return response;
     }
@@ -170,7 +170,18 @@ public class PodInstance
         }
     }
 
+    /*
+    public double CalculateDistanceToNextCheckpointAfterMove(Command commandToExecute)
+    {
+        //performs the distance calculation to next check point but after the estimate is performed
+        //This might be good to perform elsewhere where info of other pods is available to make command in case of collisions
+        //
+    }
+    */
 
+    /// <summary>
+    /// This is distance of current position but system considers position after command for collisions and checkpoint crossing
+    /// </summary>
     private void CalculateDistanceToNextCheckpoint()
     {
         //TODO: this could reveal an important problem, i get the coordinate of the previous move compared to what the system
@@ -187,13 +198,126 @@ public class PodInstance
 
     public override string ToString()
     {
-        return $"Timeout:{TimeOut},Rank:{RankingInGame},Lap:{LapNumber},Dist:{DistanceToNextCheckpoint},Cur:{CurrentPodInfo.PosCoordinates},Ch:{GameInfo.Checkpoints[CurrentPodInfo.NextCheckPointId]}";
+        return $"Timeout:{TimeOut},Rank:{RankingInGame},Lap:{LapNumber},DistNextChkPnt:{DistanceToNextCheckpoint},CurCoord:{CurrentPodInfo.PosCoordinates},ChId:{GameInfo.Checkpoints[CurrentPodInfo.NextCheckPointId]}";
     }
 }
 
 public static class Utilities
 {
     public const int CheckPointRadius = 600;
+
+    /// <summary>
+    /// Provides an angle -18 through +18 indicating angle that will take place given the pod and destination coordinates given
+    /// </summary>
+    /// <returns></returns>
+    public static int CalculateTurnAngleFromPodAndDestinationCoordinates(Coordinates coords, PodInfo pod)
+    {
+        var calculateAngleFromCoordinate = CalculateAngleDeltaBetweenPodAndCoordinatesGiven(coords, pod);
+        if (calculateAngleFromCoordinate < -18) return -18;
+        if (calculateAngleFromCoordinate > 18) return 18;
+        return (int)Math.Round(calculateAngleFromCoordinate);
+    }
+
+    /// <summary>
+    /// Calculates the angle between the current facing angle of the pod and the rotation need to face the coordinate given
+    /// </summary>
+    /// <param name="coords"></param>
+    /// <param name="pod"></param>
+    /// <returns></returns>
+    public static double CalculateAngleDeltaBetweenPodAndCoordinatesGiven(Coordinates coords, PodInfo pod)
+    {
+        var xDelta = coords.X - pod.X;
+        var yDelta = coords.Y - pod.Y;
+
+        var angleDegreesOfTarget = 0.0;
+        //the coordinates of the actual podInfo were given
+        if (xDelta == 0 && yDelta >= 0) return 0;
+
+
+        //Remember coordinate system starts with zero zero on top left, so y goes down as it goes visually up
+        if (xDelta == 0 && yDelta < 0)//
+        {
+            //we are facing north
+            angleDegreesOfTarget = 270;
+        }
+        //Remember coordinate system starts with zero zero on top left, so y goes down as it goes visually up
+        else if (xDelta == 0 && yDelta > 0)
+        {
+            //south
+            angleDegreesOfTarget = 90;
+        }
+        else if (yDelta == 0 && xDelta > 0)
+        {
+            //east
+            angleDegreesOfTarget = 0;
+        }
+        else if (yDelta == 0 && xDelta < 0)
+        {
+            //west
+            angleDegreesOfTarget = 180;
+        }
+        else
+        {
+            //in Rad
+            var ratio = Math.Abs(yDelta) / (Math.Abs(xDelta) * 1.0);
+            var angle = Math.Atan(ratio);
+            angleDegreesOfTarget = ConvertRadsToDegrees(angle);
+
+            if (yDelta < 0 && xDelta > 0)
+            {
+                //on the north east
+                angleDegreesOfTarget = 360 - angleDegreesOfTarget;
+            }
+            else if (yDelta > 0 && xDelta > 0)
+            {
+                //on south east, do nothing to it
+            }
+            else if (yDelta > 0 && xDelta < 0)
+            {
+                //south west
+                angleDegreesOfTarget = 180 - angleDegreesOfTarget;
+            }
+            else if (yDelta < 0 && xDelta < 0)
+            {
+                //north west
+                angleDegreesOfTarget = 180 + angleDegreesOfTarget;
+            }
+        }
+
+        //Console.Error.WriteLine($"calcAngle {angle}, degAngle {angleDegrees}, y {yDelta}, x {xDelta}, ratio {ratio}");
+
+        //TODO: I am at the point where i need to address rotating clock wise or counter cw. 
+        var angleToTarg = Math.Abs(angleDegreesOfTarget - pod.Angle);
+        var finalAngle = 0.0;
+
+        if (angleToTarg <= 180)
+        {
+            if (angleDegreesOfTarget >= pod.Angle)
+            {
+                finalAngle = angleToTarg; //turn pod clockwise to target
+            }
+            else //angleDegreesOfTarget < pod.Angle
+            {
+                finalAngle = angleToTarg * -1; //turn counter clockwise to target
+            }
+        }
+        else
+        {
+            if (angleDegreesOfTarget >= pod.Angle)
+            {
+                finalAngle = (360 - angleDegreesOfTarget) * -1; //turn counter clockwise to target
+            }
+            else ////angleDegreesOfTarget < pod.Angle
+            {
+                finalAngle = (360 - angleDegreesOfTarget); //turn clockwise to target
+            }
+        }
+
+        //Console.Error.WriteLine($"point2pointAngle {angleDegrees}, finalAngle {finalAngle} quad {quadrant} faceAngle {pod.angle}");
+        return finalAngle;
+
+    }
+
     public static double ConvertDegreesToRadians(double degrees)
     {
         var radians = (Math.PI / 180) * degrees;
@@ -209,20 +333,21 @@ public static class Utilities
     {
         if (Math.Abs(proposedFacingAngleToAdd) > 18) throw new Exception($"Angle to add too large {proposedFacingAngleToAdd}");
         var a = pod.Angle + proposedFacingAngleToAdd;
-        var angleAbsolute = a >= 0 ? a : 360 + a; //plus since a negative
+        var angleAbsolute = (a >= 0 ? a : 360 + a)%360; //plus since a negative
         var angleRad = ConvertDegreesToRadians(angleAbsolute);
         var facingX = Math.Cos(angleRad) * proposedThrust;
         var facingY = Math.Sin(angleRad) * proposedThrust;
 
-        var speedVectorX = pod.Vx + facingX;
+        var result = new PodInfo();
+
+        var speedVectorX = pod.Vx + facingX; //truncated
         var speedVectorY = pod.Vy + facingY;
 
-        var result = new PodInfo();
-        result.X = pod.X + (int)Math.Round(speedVectorX);
-        result.Y = pod.Y + (int)Math.Round(speedVectorY);
+        result.X = (int)Math.Round(speedVectorX + pod.X);
+        result.Y = (int)Math.Round(speedVectorY + pod.Y);
         result.Angle = angleAbsolute;
-        result.Vx = (int)(speedVectorX * 0.85);
-        result.Vy = (int)(speedVectorY * 0.85);
+        result.Vx = (int) (speedVectorX * 0.85);
+        result.Vy = (int) (speedVectorY * 0.85);
         result.NextCheckPointId = -1; //needs to be calculated, here we just calculate position and stuff
         return result;
     }
@@ -303,8 +428,9 @@ class Player
             {
                 podInstances[rankKey].RankingInGame = rank;
                 rank++;
-                Console.Error.WriteLine($"PodName:{rankKey},{podInstances[rankKey]}");
+                //Console.Error.WriteLine($"PodName:{rankKey},{podInstances[rankKey]}");
             }
+
 
 
             //win
@@ -312,6 +438,21 @@ class Player
             var pod2Destination = gameInfo.Checkpoints[runInfo.Pods[Pods.MyPod2].NextCheckPointId];
             var cmd1 = new Command { Destination = pod1Destination, Thrust = 100, FuturePodAfterCommand = null };
             var cmd2 = new Command { Destination = pod2Destination, Thrust = 100, FuturePodAfterCommand = null };
+
+            //calculate future positions of pods after commands are executed
+            var podInfo1 = podInstances[Pods.MyPod1].CurrentPodInfo;
+            var podInfo2 = podInstances[Pods.MyPod2].CurrentPodInfo;
+
+            var futureAnglePod1 = Utilities.CalculateTurnAngleFromPodAndDestinationCoordinates(pod1Destination,podInfo1);
+            var futureAnglePod2 = Utilities.CalculateTurnAngleFromPodAndDestinationCoordinates(pod2Destination, podInfo2);
+
+            var futurePod1Position = Utilities.CalculateFuturePosition(podInstances[Pods.MyPod1].CurrentPodInfo, cmd1.Thrust, futureAnglePod1);
+            var futurePod2Position = Utilities.CalculateFuturePosition(podInstances[Pods.MyPod2].CurrentPodInfo, cmd2.Thrust, futureAnglePod2);
+
+            Console.Error.WriteLine($"Previous,Pod1:{podInstances[Pods.MyPod1].PreviousPodInfo}, Pod2{podInstances[Pods.MyPod2].PreviousPodInfo}");
+            Console.Error.WriteLine($"Current ,Pod1:{podInstances[Pods.MyPod1].CurrentPodInfo}, Pod2{podInstances[Pods.MyPod2].CurrentPodInfo}");
+            Console.Error.WriteLine($"Future  ,Pod1:{futurePod1Position}, Pod2{futurePod2Position}");
+
             Console.WriteLine(cmd1);
             Console.WriteLine(cmd2);
 
